@@ -16,7 +16,7 @@ H_image = 448
 W_image = 448 
 H_grid = 7 
 W_grid = 7 
-EPOCHS = 40
+EPOCHS = 500
 
 class SetNoob(data.Dataset):
   def __init__(self, pathto_dset, namedset, train=True, transforms=None):
@@ -43,6 +43,7 @@ class SetNoob(data.Dataset):
               if val != '': ar.append(float(val))
             if ar: labels.append(ar)
     labels = torch.tensor(labels)
+    #print(f'orig:\n{labels}\n')
     image = Image.open(os.path.join(self.images,image)).convert('RGB')
     w, h = image.size
     if self.transforms:
@@ -58,35 +59,38 @@ class SetNoob(data.Dataset):
       torch.zeros_like(labels),
       torch.zeros(labels.size(0),
       NUM_CLASSES)], dim=1)[:, 1:]
-
-    print(labels[0, :5]) # bbox1
-    print(labels[0, 5:10]) # bbox2
-    print(labels[0, 10:90].shape) # classes
-
-    exit()
-    
     for i, ax in enumerate(labels): ax[10+class_ids[i]] = 1
+   
     # запись в оси X и Y сетки 
     cell_x = torch.floor(labels[:, 0] * W_grid).to(torch.int32) 
     cell_y = torch.floor(labels[:, 1] * H_grid).to(torch.int32)
     target[cell_x, cell_y] = labels
     return image, target
 
-
 class BboxLoss_withMSE:
-  def __call__(self, pred, y):
-    pred_labels = utils.extract_labels(pred[0], bbox=False)
-    y_labels = utils.extract_labels(pred[1], bbox=False)
+  def __call__(self, pred, y): 
+    mse_loss = nn.MSELoss(reduction='sum')
+    mse_none = nn.MSELoss(reduction='none')
+    cross_entropy_loss = nn.CrossEntropyLoss(reduction='none')
 
-    print(pred_labels)
-    print(y_labels)
+    iou_bbox1 = utils.IoU(pred[..., :4], y[..., :4]) #  [B, 7, 7, 1]
+    iou_bbox2 = utils.IoU(pred[..., 5:9], y[..., :4]) # [B, 7, 7, 1]
 
-    print(pred.shape)
-    print(y.shape)
-    exit()
-    
-    pass
+    bbox1 = torch.where(iou_bbox1 > iou_bbox2, pred[..., :5], pred[..., 5:10]) # [B, 7, 7, 5]
+    bbox2 = torch.where(iou_bbox2 > iou_bbox1, pred[..., :5], pred[..., 5:10]) # [B, 7, 7, 5]
+    bbox1 = torch.where(iou_bbox1 == iou_bbox2, pred[..., :5], bbox1)    
 
+    coords_loss = (y[..., 4:5] * mse_none(bbox1[..., :4], y[..., :4])).sum()
+    obj_conf_loss = mse_loss(bbox1[..., 4:5], y[..., 4:5])
+    noobj_conf_loss = mse_loss(bbox2[..., 4:5], y[..., 9:10])
+    class_loss = (y[..., 4:5].squeeze(-1) * cross_entropy_loss(pred[..., 10:].permute(0, 3, 1, 2), y[..., 10:].permute(0, 3, 1, 2))).sum()
+
+    return (
+      1.0 * coords_loss +
+      1.0 * obj_conf_loss + 
+      1.0 * noobj_conf_loss + 
+      0.5 * class_loss
+    )
 
 class ModelTrainer:
   def __init__(self, model, train_set, val_set, test_set, lr=0.001):
@@ -126,22 +130,27 @@ class ModelTrainer:
       for x,y in self.test_loader:
         x, y = x.to(self.dev), y.to(self.dev)
         pred = self.model(x)
-        last_pred = pred
-        last_y = y
+        
+        # print(pred[0,0,0, :5])
+        # print(pred[0,0,0, 5:10])
+        # print(pred[0,0,0, 10:])
+        
+        utils.detection_objects(x, pred)
+        break
+    
     losses += self.criterion(pred, y).item()
     return losses / len(self.test_loader)
 
   def fit(self):
-    for x, y in self.train_loader: # отобразить изображение с рамками
-      print(utils.extract_labels(y[0], bbox=False))
-      # utils.detection_objects(x, y)
-      exit()
+    # for x, y in self.train_loader: # отобразить изображение с рамками
+      # print(utils.detection_objects(x, y))
+      # exit()
     for _ep in range(EPOCHS):
       self.model.train()
       train_meanloss = self.train()
       self.model.eval()
       val_meanloss = self.valid()
-      if _ep % 10 == 0: print(f'[{_ep}/{EPOCHS}]\tLOSS TRAIN {train_meanloss}\tLOSS VAL {val_meanloss}')
+      if _ep % 100 == 0: print(f'[{_ep}/{EPOCHS}]\tLOSS TRAIN {train_meanloss}\tLOSS VAL {val_meanloss}')
     self.model.eval()
 
   def __call__(self): 
@@ -154,11 +163,13 @@ def main():
     v2.ToImage(),
     v2.ToDtype(torch.float32, scale=True),
   ])
+
   trainer = ModelTrainer(
     model=BACKBONEModel(3, 7*7*(NUM_BOXES*5+NUM_CLASSES)), 
     train_set=SetNoob("./", "coco8",train=True, transforms=transforms),
     val_set=SetNoob("./", "coco8",train=False, transforms=transforms),
-    test_set=SetNoob("./", "coco8",train=True, transforms=transforms)); trainer()
+    test_set=SetNoob("./", "coco8",train=True, transforms=transforms)); 
+  trainer()
 
   print(f'общий показатель ошибки модели: {trainer.test()}')
 
