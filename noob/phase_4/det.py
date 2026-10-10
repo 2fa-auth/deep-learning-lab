@@ -130,12 +130,7 @@ class ModelTrainer:
       for x,y in self.test_loader:
         x, y = x.to(self.dev), y.to(self.dev)
         pred = self.model(x)
-        
-        # print(pred[0,0,0, :5])
-        # print(pred[0,0,0, 5:10])
-        # print(pred[0,0,0, 10:])
-        
-        utils.detection_objects(x, pred)
+        utils.detection_objects(x, pred) 
         break
     
     losses += self.criterion(pred, y).item()
@@ -143,8 +138,7 @@ class ModelTrainer:
 
   def fit(self):
     # for x, y in self.train_loader: # отобразить изображение с рамками
-      # print(utils.detection_objects(x, y))
-      # exit()
+      # utils.detection_objects(x, y)
     for _ep in range(EPOCHS):
       self.model.train()
       train_meanloss = self.train()
@@ -155,7 +149,6 @@ class ModelTrainer:
 
   def __call__(self): 
     self.fit()
-
 
 def main():
   transforms = v2.Compose([
