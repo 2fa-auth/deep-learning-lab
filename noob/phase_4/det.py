@@ -16,7 +16,7 @@ H_image = 448
 W_image = 448 
 H_grid = 7 
 W_grid = 7 
-EPOCHS = 500
+EPOCHS = 300
 
 class SetNoob(data.Dataset):
   def __init__(self, pathto_dset, namedset, train=True, transforms=None):
@@ -28,7 +28,7 @@ class SetNoob(data.Dataset):
 
   def __len__(self): 
     return len(self.imgs_list)    
-
+  
   def __getitem__(self, index):
     image=self.imgs_list[index]
     labels=[]
@@ -43,13 +43,13 @@ class SetNoob(data.Dataset):
               if val != '': ar.append(float(val))
             if ar: labels.append(ar)
     labels = torch.tensor(labels)
-    #print(f'orig:\n{labels}\n')
     image = Image.open(os.path.join(self.images,image)).convert('RGB')
     w, h = image.size
     if self.transforms:
       bbox = BoundingBoxes(data=utils.denorm_coords(labels[:, 1:], w, h), format='CXCYWH', canvas_size=(h,w))
       image, labels[:, 1:] = self.transforms(image, bbox)
       labels[:, 1:] = utils.norm_coords(bbox, w, h)
+
     # создание сетки 7x7 
     target=torch.zeros(7, 7, NUM_BOXES * 5 + NUM_CLASSES)
     class_ids = labels[:, 0].to(torch.int32)
@@ -60,7 +60,7 @@ class SetNoob(data.Dataset):
       torch.zeros(labels.size(0),
       NUM_CLASSES)], dim=1)[:, 1:]
     for i, ax in enumerate(labels): ax[10+class_ids[i]] = 1
-   
+
     # запись в оси X и Y сетки 
     cell_x = torch.floor(labels[:, 0] * W_grid).to(torch.int32) 
     cell_y = torch.floor(labels[:, 1] * H_grid).to(torch.int32)
@@ -75,7 +75,6 @@ class BboxLoss_withMSE:
 
     iou_bbox1 = utils.IoU(pred[..., :4], y[..., :4]) #  [B, 7, 7, 1]
     iou_bbox2 = utils.IoU(pred[..., 5:9], y[..., :4]) # [B, 7, 7, 1]
-
     bbox1 = torch.where(iou_bbox1 > iou_bbox2, pred[..., :5], pred[..., 5:10]) # [B, 7, 7, 5]
     bbox2 = torch.where(iou_bbox2 > iou_bbox1, pred[..., :5], pred[..., 5:10]) # [B, 7, 7, 5]
     bbox1 = torch.where(iou_bbox1 == iou_bbox2, pred[..., :5], bbox1)    
@@ -98,14 +97,15 @@ class ModelTrainer:
     self.model = model.to(self.dev)
     self.train_loader = data.DataLoader(dataset=train_set, batch_size=2, shuffle=True)
     self.val_loader = data.DataLoader(dataset=val_set, batch_size=2, shuffle=False)  
-    self.test_loader = data.DataLoader(dataset=test_set, batch_size=2, shuffle=False)
+    self.test_loader = data.DataLoader(dataset=test_set, batch_size=2, shuffle=True)
     self.criterion = BboxLoss_withMSE()
     self.optimizer = Adam(params=self.model.parameters(), lr=lr)
   
   def train(self):
     losses = 0
     for x, y in self.train_loader:
-      x, y = x.to(self.dev), y.to(self.dev)
+      x = x.to(self.dev)
+      y = y.to(self.dev)
       pred = self.model(x)
       loss = self.criterion(pred, y)
       self.optimizer.zero_grad()
@@ -118,17 +118,18 @@ class ModelTrainer:
     losses = 0
     with torch.no_grad():
       for x, y in self.val_loader:
-        x, y = x.to(self.dev), y.to(self.dev)
+        x = x.to(self.dev)
+        y = y.to(self.dev)
         pred = self.model(x)
         losses += self.criterion(pred, y).item()
     return losses / len(self.val_loader)
   
   def test(self):
     losses = 0
-    last_pred = 0
     with torch.no_grad():
       for x,y in self.test_loader:
-        x, y = x.to(self.dev), y.to(self.dev)
+        x = x.to(self.dev)
+        y = y.to(self.dev)
         pred = self.model(x)
         utils.detection_objects(x, pred) 
         break
@@ -163,7 +164,6 @@ def main():
     val_set=SetNoob("./", "coco8",train=False, transforms=transforms),
     test_set=SetNoob("./", "coco8",train=True, transforms=transforms)); 
   trainer()
-
   print(f'общий показатель ошибки модели: {trainer.test()}')
 
 if __name__ == "__main__":
